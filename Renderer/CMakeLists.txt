@@ -20,7 +20,7 @@ endif (POLICY CMP0048)
 
 project(CSE274ProjectRenderer)
 
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.10)
 if (NOT WIN32)
 # visual studio doesn't like these (not need them):
 set (CMAKE_CXX_FLAGS "--std=c++11")

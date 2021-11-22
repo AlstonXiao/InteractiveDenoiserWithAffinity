@@ -21,6 +21,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "3rdParty/stb_image.h"
 
+#define TINYPLY_IMPLEMENTATION
+#include "3rdParty/tinyply.h"
+
 //std
 #include <set>
 
@@ -43,9 +46,7 @@ namespace std {
 
 /*! \namespace osc - Optix Siggraph Course */
 namespace osc {
-  
-
-
+   using namespace std;
   /*! find vertex with given position, normal, texcoord, and return
       its vertex ID, or, if it doesn't exit, add it to the mesh, and
       its just-created index */
@@ -83,61 +84,8 @@ namespace osc {
     
     return newID;
   }
-
-  /*! load a texture (if not already loaded), and return its ID in the
-      model's textures[] vector. Textures that could not get loaded
-      return -1 */
-  int loadTexture(Model *model,
-                  std::map<std::string,int> &knownTextures,
-                  const std::string &inFileName,
-                  const std::string &modelPath)
-  {
-    if (inFileName == "")
-      return -1;
-    
-    if (knownTextures.find(inFileName) != knownTextures.end())
-      return knownTextures[inFileName];
-
-    std::string fileName = inFileName;
-    // first, fix backspaces:
-    for (auto &c : fileName)
-      if (c == '\\') c = '/';
-    fileName = modelPath+"/"+fileName;
-
-    vec2i res;
-    int   comp;
-    unsigned char* image = stbi_load(fileName.c_str(),
-                                     &res.x, &res.y, &comp, STBI_rgb_alpha);
-    int textureID = -1;
-    if (image) {
-      textureID = (int)model->textures.size();
-      Texture *texture = new Texture;
-      texture->resolution = res;
-      texture->pixel      = (uint32_t*)image;
-
-      /* iw - actually, it seems that stbi loads the pictures
-         mirrored along the y axis - mirror them here */
-      for (int y=0;y<res.y/2;y++) {
-        uint32_t *line_y = texture->pixel + y * res.x;
-        uint32_t *mirrored_y = texture->pixel + (res.y-1-y) * res.x;
-        int mirror_y = res.y-1-y;
-        for (int x=0;x<res.x;x++) {
-          std::swap(line_y[x],mirrored_y[x]);
-        }
-      }
-      
-      model->textures.push_back(texture);
-    } else {
-      std::cout << GDT_TERMINAL_RED
-                << "Could not load texture from " << fileName << "!"
-                << GDT_TERMINAL_DEFAULT << std::endl;
-    }
-    
-    knownTextures[inFileName] = textureID;
-    return textureID;
-  }
   
-  Model *loadOBJ(const std::string &objFile)
+  Model *loadOBJ(const std::string &objFile, std::vector<Texture* > &texture_list, std::map<std::string, int> &knownTextures)
   {
     Model *model = new Model;
 
@@ -165,8 +113,8 @@ namespace osc {
     if (materials.empty())
       throw std::runtime_error("could not parse materials ...");
 
-    std::cout << "Done loading obj file - found " << shapes.size() << " shapes with " << materials.size() << " materials" << std::endl;
-    std::map<std::string, int>      knownTextures;
+    // std::cout << "Done loading obj file - found " << shapes.size() << " shapes with " << materials.size() << " materials" << std::endl;
+
     for (int shapeID=0;shapeID<(int)shapes.size();shapeID++) {
       tinyobj::shape_t &shape = shapes[shapeID];
 
@@ -189,11 +137,23 @@ namespace osc {
                     addVertex(mesh, attributes, idx1, knownVertices),
                     addVertex(mesh, attributes, idx2, knownVertices));
           mesh->index.push_back(idx);
-          mesh->diffuse = (const vec3f&)materials[materialID].diffuse;
-          mesh->diffuseTextureID = loadTexture(model,
-                                               knownTextures,
-                                               materials[materialID].diffuse_texname,
-                                               modelDir);
+          mesh->mat = new uberMaterial();
+
+          if (materialID >= 0) {
+              mesh->mat->kd = (const vec3f&)materials[materialID].diffuse;
+              mesh->mat->ks = (const vec3f&)materials[materialID].specular;
+              mesh->mat->roughness_square = pow((materials[materialID].shininess == 0) ? 0. : (1.f / materials[materialID].shininess), 2);
+
+              mesh->mat->kd_map_id = loadTexture(texture_list,
+                  knownTextures,
+                  materials[materialID].diffuse_texname,
+                  modelDir);
+
+              mesh->mat->ks_map_id = loadTexture(texture_list,
+                  knownTextures,
+                  materials[materialID].specular_texname,
+                  modelDir);
+          }
         }
 
         if (mesh->vertex.empty())
@@ -209,7 +169,316 @@ namespace osc {
       for (auto vtx : mesh->vertex)
         model->bounds.extend(vtx);
     
-    std::cout << "created a total of " << model->meshes.size() << " meshes" << std::endl;
+    // std::cout << "created a total of " << model->meshes.size() << " meshes" << std::endl;
     return model;
+  }
+
+  void tokenize(std::string const& str, const char delim,
+      std::vector<std::string>& out)
+  {
+      size_t start;
+      size_t end = 0;
+
+      while ((start = str.find_first_not_of(delim, end)) != std::string::npos)
+      {
+          end = str.find(delim, start);
+          out.push_back(str.substr(start, end - start));
+      }
+  }
+
+  inline void removeQuote(string& str) {
+      str.erase(std::remove(str.begin(), str.end(), '\"'), str.end());
+  }
+
+  void processMaterial(Material* mat, std::vector<std::string>& commands, std::map<std::string, int> textureMap) {
+      for (size_t i = 7; i < commands.size() - 1; ) {
+          string type = (commands[i]);
+          removeQuote(type);
+          string entry = (commands[i + 1]);
+          removeQuote(entry);
+          if (type == "rgb" && (entry == "Ks"|| entry == "k")) {
+              mat->ks = vec3f(stof(commands[i + 3]), stof(commands[i + 4]), stof(commands[i + 5]));
+              i = i + 7;
+          }
+          else if (type == "rgb" && (entry == "Kd" || entry == "eta")) {
+              mat->kd = vec3f(stof(commands[i + 3]), stof(commands[i + 4]), stof(commands[i + 5]));
+              i = i + 7;
+          }
+          else if (type == "texture" && entry == "Ks") {
+              string textureName = commands[i + 3];
+              removeQuote(textureName);
+              mat->has_ks_map = true;
+              mat->ks_map_id = textureMap[textureName];
+              i = i + 5;
+          }
+          else if (type == "texture" && entry == "Kd") {
+              string textureName = commands[i + 3];
+              removeQuote(textureName);
+              mat->has_kd_map = true;
+              mat->kd_map_id = textureMap[textureName];
+              i = i + 5;
+          }
+          else if (type == "float" && entry == "uroughness") {
+              mat->roughness_square = stof(commands[i + 3]);
+              i = i + 5;
+          }
+          else if (type == "float" && entry == "vroughness") {
+              mat->roughness_square *= stof(commands[i + 3]);
+              i = i + 5;
+          }
+          else if (type == "float" && entry == "roughness") {
+              mat->roughness_square = stof(commands[i + 3]) * stof(commands[i + 3]);
+              i = i + 5;
+          }
+          else {
+              i = i + 1;
+          }
+      }
+  }
+
+  TriangleMesh* loadPly(const std::string& plyfile) {
+      //std::cout << "........................................................................\n";
+      //std::cout << "Now Reading: " << plyfile << std::endl;
+
+      std::unique_ptr<std::istream> file_stream;
+      std::vector<uint8_t> byte_buffer;
+      using namespace tinyply;
+      try {
+            // For most files < 1gb, pre-loading the entire file upfront and wrapping it into a 
+            // stream is a net win for parsing speed, about 40% faster. 
+
+            file_stream.reset(new std::ifstream(plyfile, std::ios::binary));
+            if (!file_stream || file_stream->fail()) throw std::runtime_error("file_stream failed to open " + plyfile);
+
+            file_stream->seekg(0, std::ios::end);
+            const float size_mb = file_stream->tellg() * float(1e-6);
+            file_stream->seekg(0, std::ios::beg);
+
+            PlyFile file;
+            file.parse_header(*file_stream);
+
+            // std::cout << "\t[ply_header] Type: " << (file.is_binary_file() ? "binary" : "ascii") << std::endl;
+            //for (const auto& c : file.get_comments()) std::cout << "\t[ply_header] Comment: " << c << std::endl;
+            //for (const auto& c : file.get_info()) std::cout << "\t[ply_header] Info: " << c << std::endl;
+
+            //for (const auto& e : file.get_elements())
+            //{
+            //    std::cout << "\t[ply_header] element: " << e.name << " (" << e.size << ")" << std::endl;
+            //    for (const auto& p : e.properties)
+            //    {
+            //        std::cout << "\t[ply_header] \tproperty: " << p.name << " (type=" << tinyply::PropertyTable[p.propertyType].str << ")";
+            //        if (p.isList) std::cout << " (list_type=" << tinyply::PropertyTable[p.listType].str << ")";
+            //        std::cout << std::endl;
+            //    }
+            //}
+
+            // Because most people have their own mesh types, tinyply treats parsed data as structured/typed byte buffers. 
+            // See examples below on how to marry your own application-specific data structures with this one. 
+            std::shared_ptr<PlyData> vertices, normals, texcoords, faces;
+
+            // The header information can be used to programmatically extract properties on elements
+            // known to exist in the header prior to reading the data. For brevity of this sample, properties 
+            // like vertex position are hard-coded: 
+            try { vertices = file.request_properties_from_element("vertex", { "x", "y", "z" }); }
+            catch (const std::exception& e) {} // std::cerr << "tinyply exception: " << e.what() << std::endl; }
+
+            try { normals = file.request_properties_from_element("vertex", { "nx", "ny", "nz" }); }
+            catch (const std::exception& e) {} // std::cerr << "tinyply exception: " << e.what() << std::endl; }
+
+            try { texcoords = file.request_properties_from_element("vertex", { "u", "v" }); }
+            catch (const std::exception& e) {} // std::cerr << "tinyply exception: " << e.what() << std::endl; }
+
+            // Providing a list size hint (the last argument) is a 2x performance improvement. If you have 
+            // arbitrary ply files, it is best to leave this 0. 
+            try { faces = file.request_properties_from_element("face", { "vertex_indices" }, 3); }
+            catch (const std::exception& e) {} // std::cerr << "tinyply exception: " << e.what() << std::endl; }
+
+            file.read(*file_stream);
+
+            //if (vertices)   std::cout << "\tRead " << vertices->count << " total vertices " << std::endl;
+            //if (normals)    std::cout << "\tRead " << normals->count << " total vertex normals " << std::endl;
+            //if (texcoords)  std::cout << "\tRead " << texcoords->count << " total vertex texcoords " << std::endl;
+            //if (faces)      std::cout << "\tRead " << faces->count << " total faces (triangles) " << std::endl;
+
+            // Example One: converting to your own application types
+            TriangleMesh* mesh = new TriangleMesh();
+            
+            const size_t numVerticesBytes = vertices->buffer.size_bytes();
+            std::vector<vec3f> verts(vertices->count);
+            std::memcpy(verts.data(), vertices->buffer.get(), numVerticesBytes);
+            mesh->vertex = verts;
+
+            if (normals) {
+                const size_t numNormalBytes = normals->buffer.size_bytes();
+                std::vector<vec3f> norms(normals->count);
+                std::memcpy(norms.data(), normals->buffer.get(), numNormalBytes);
+                mesh->normal = norms;
+            } 
+
+            if (texcoords) {
+                const size_t numTextBytes = texcoords->buffer.size_bytes();
+                std::vector<vec2f> texts(texcoords->count);
+                std::memcpy(texts.data(), texcoords->buffer.get(), numTextBytes);
+                mesh->texcoord = texts;
+            }
+
+            const size_t numFaceBytes = faces->buffer.size_bytes();
+            std::vector<vec3i> facess(faces->count);
+            std::memcpy(facess.data(), faces->buffer.get(), numFaceBytes);
+            
+            mesh->index = facess;
+            return mesh;
+            // Example Two: converting to your own application type
+            //{
+            //    std::vector<float3> verts_floats;
+            //    std::vector<double3> verts_doubles;
+            //    if (vertices->t == tinyply::Type::FLOAT32) { /* as floats ... */ }
+            //    if (vertices->t == tinyply::Type::FLOAT64) { /* as doubles ... */ }
+            //}
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Caught tinyply exception: " << e.what() << std::endl;
+        }
+      
+  }
+
+  Model* loadPBRT(const std::string& pbrtFile, std::vector<Texture* >& texture_list, std::map<std::string, int>& knownTextures, std::vector<QuadLight>& lightList) {
+      Model* model = new Model;
+      std::map<std::string, Material *> materialMap;
+      std::map<std::string, int> textureMap;
+
+      const std::string modelDir
+          = pbrtFile.substr(0, pbrtFile.rfind('/') );
+
+      std::ifstream infile(pbrtFile);
+
+      std::string line;
+      Material* currentMat = new uberMaterial();
+      bool skip = false;
+      while (std::getline(infile, line)) {
+          std::vector<std::string> commands;
+          line.erase(std::remove(line.begin(), line.end(), '\t'), line.end());
+          tokenize(line, ' ', commands);
+          if (commands.size() == 0) continue;
+          if (commands[0] == "AttributeBegin") {
+              skip = true;
+              string areaLine;
+              std::getline(infile, areaLine);
+              std::vector<std::string> areaLight;
+              areaLine.erase(std::remove(areaLine.begin(), areaLine.end(), '\t'), areaLine.end());
+              tokenize(areaLine, ' ', areaLight);
+
+              QuadLight light;
+              light.power = vec3f(stof(areaLight[5]), stof(areaLight[6]), stof(areaLight[7]));
+              std::getline(infile, areaLine);
+              std::getline(infile, areaLine);
+              std::vector<std::string> areaLightDetail;
+              areaLine.erase(std::remove(areaLine.begin(), areaLine.end(), '\t'), areaLine.end());
+              tokenize(areaLine, ' ', areaLightDetail);
+              vec3f origin = vec3f(stof(areaLightDetail[15]), stof(areaLightDetail[16]), stof(areaLightDetail[17]));
+              vec3f leftEdge = vec3f(stof(areaLightDetail[18]), stof(areaLightDetail[19]), stof(areaLightDetail[20]));
+              vec3f rightEdge = vec3f(stof(areaLightDetail[24]), stof(areaLightDetail[25]), stof(areaLightDetail[26]));
+              
+              light.origin = origin;
+              light.du = leftEdge - origin;
+              light.dv = rightEdge - origin;
+              lightList.push_back(light);
+          }
+          if (commands[0] == "AttributeEnd") {
+              skip = false;
+          }
+          if (skip) continue;
+          if (commands[0] == "Texture") {
+              string type = (commands[2]);
+              removeQuote(type);
+              if (type != "spectrum") continue;
+
+              string name = commands[1];
+              removeQuote(name);
+
+              string file = commands[7];
+              removeQuote(file);
+              string path = modelDir + file;
+              int texture_id = loadTexture(texture_list, knownTextures, file, modelDir);
+              textureMap[name] = texture_id;
+          }
+          if (commands[0] == "MakeNamedMaterial") {
+              string name = commands[1];
+              removeQuote(name);
+              string type = (commands[5]);
+              removeQuote(type);
+               if (type == "substrate") {
+                  substrateMaterial* mat = new substrateMaterial();
+                  processMaterial(mat, commands, textureMap);
+                  materialMap[name] = mat;
+              }
+              else if (type == "matte") {
+                  matteMaterial* mat = new matteMaterial();
+                  processMaterial(mat, commands, textureMap);
+                  materialMap[name] = mat;
+              }
+              else if (type == "metal") {
+                   metalMaterial* mat = new metalMaterial();
+                  processMaterial(mat, commands, textureMap);
+                  materialMap[name] = mat;
+              }
+              else if (type == "mirror") {
+                  mirrorMaterial* mat = new mirrorMaterial();
+                  processMaterial(mat, commands, textureMap);
+                  materialMap[name] = mat;
+              } else {
+                  uberMaterial* mat = new uberMaterial();
+                  processMaterial(mat, commands, textureMap);
+                  materialMap[name] = mat;
+              }
+          }
+          if (commands[0] == "NamedMaterial") {
+              removeQuote(commands[1]);
+              currentMat = materialMap[commands[1]];
+          }
+          if (commands[0] == "Shape") {
+              string type = (commands[1]);
+              removeQuote(type);
+              if (type == "plymesh") {
+                  string file = commands[5];
+                  removeQuote(file);
+                  string path = modelDir + "/" + file;
+                  TriangleMesh* mesh = loadPly(path);
+                  mesh->mat = currentMat;
+                  model->meshes.push_back(mesh);
+              }
+              else {
+                  TriangleMesh* mesh = new TriangleMesh;
+                  mesh->mat = currentMat;
+                  size_t i = 5;
+                  while (commands[i] != "]") {
+                      mesh->index.push_back(vec3i(stoi(commands[i]), stoi(commands[i + 1]), stoi(commands[i + 2])));
+                      i = i + 3;
+                  }
+                  i = i + 4;
+                  while (commands[i] != "]") {
+                      mesh->vertex.push_back(vec3f(stof(commands[i]), stof(commands[i + 1]), stof(commands[i + 2])));
+                      i = i + 3;
+                  }
+                  i = i + 4;
+                  while (commands[i] != "]") {
+                      mesh->normal.push_back(vec3f(stof(commands[i]), stof(commands[i + 1]), stof(commands[i + 2])));
+                      i = i + 3;
+                  }
+                  i = i + 4;
+                  while (commands[i] != "]") {
+                      mesh->texcoord.push_back(vec2f(stof(commands[i]), stof(commands[i + 1])));
+                      i = i + 2;
+                  }
+                  model->meshes.push_back(mesh);
+              }
+          }
+      }
+      for (auto mesh : model->meshes)
+          for (auto vtx : mesh->vertex)
+              model->bounds.extend(vtx);
+      std::cout << "created a total of " << model->meshes.size() << " meshes" << std::endl;
+      return model;
   }
 }

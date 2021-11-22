@@ -30,7 +30,12 @@ add_executable(PathTracer
   SampleRenderer.h
   SampleRenderer.cpp
   Model.cpp
+  Model.h
   main.cpp
+  Material.h
+Material.cpp
+  Scene.h
+  Scene.cpp
   )
 
 target_link_libraries(PathTracer

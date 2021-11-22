@@ -52,29 +52,33 @@ namespace osc {
 
   /*! constructor - performs all setup, including initializing
     optix, creates module, pipeline, programs, SBT, etc. */
-  SampleRenderer::SampleRenderer(const Model *model, const QuadLight &light)
-    : model(model)
+  SampleRenderer::SampleRenderer(const Scene* scene)
+      : scene(scene)
   {
-    initOptix();
 
-    launchParams.light.origin = light.origin;
-    launchParams.light.du     = light.du;
-    launchParams.light.dv     = light.dv;
-    launchParams.light.power  = light.power;
+      initOptix();
 
-    std::cout << "#osc: creating optix context ..." << std::endl;
-    createContext();
-      
-    std::cout << "#osc: setting up module ..." << std::endl;
-    createModule();
+      lightBuffer.alloc_and_upload(scene->light_list);
+      launchParams.lights = (light*)lightBuffer.d_pointer();
+      launchParams.numLights = scene->light_list.size();
 
-    std::cout << "#osc: creating raygen programs ..." << std::endl;
-    createRaygenPrograms();
-    std::cout << "#osc: creating miss programs ..." << std::endl;
-    createMissPrograms();
-    std::cout << "#osc: creating hitgroup programs ..." << std::endl;
-    createHitgroupPrograms();
+      std::cout << "#osc: creating optix context ..." << std::endl;
+      createContext();
 
+      std::cout << "#osc: setting up module ..." << std::endl;
+      createModule();
+
+      std::cout << "#osc: creating raygen programs ..." << std::endl;
+      createRaygenPrograms();
+      std::cout << "#osc: creating miss programs ..." << std::endl;
+      createMissPrograms();
+      std::cout << "#osc: creating hitgroup programs ..." << std::endl;
+      createHitgroupPrograms();
+
+      launchParamsBuffer.alloc(sizeof(launchParams));
+  }
+
+  void SampleRenderer::buildScene() {
     launchParams.traversable = buildAccel();
     
     std::cout << "#osc: setting up optix pipeline ..." << std::endl;
@@ -86,23 +90,24 @@ namespace osc {
     std::cout << "#osc: building SBT ..." << std::endl;
     buildSBT();
 
-    launchParamsBuffer.alloc(sizeof(launchParams));
+    
     std::cout << "#osc: context, module, pipeline, etc, all set up ..." << std::endl;
 
     std::cout << GDT_TERMINAL_GREEN;
     std::cout << "#osc: Optix 7 Sample fully set up" << std::endl;
     std::cout << GDT_TERMINAL_DEFAULT;
+    
   }
 
   void SampleRenderer::createTextures()
   {
-    int numTextures = (int)model->textures.size();
+    int numTextures = (int)scene->texture_list.size();
 
     textureArrays.resize(numTextures);
     textureObjects.resize(numTextures);
     
     for (int textureID=0;textureID<numTextures;textureID++) {
-      auto texture = model->textures[textureID];
+      auto texture = scene->texture_list[textureID];
       
       cudaResourceDesc res_desc = {};
       
@@ -138,7 +143,7 @@ namespace osc {
       tex_desc.minMipmapLevelClamp = 0;
       tex_desc.mipmapFilterMode    = cudaFilterModePoint;
       tex_desc.borderColor[0]      = 1.0f;
-      tex_desc.sRGB                = 0;
+      tex_desc.sRGB                = 2.2;
       
       // Create texture object
       cudaTextureObject_t cuda_tex = 0;
@@ -149,7 +154,10 @@ namespace osc {
   
   OptixTraversableHandle SampleRenderer::buildAccel()
   {
-    const int numMeshes = (int)model->meshes.size();
+    int numMeshes = (int)scene->base_model->meshes.size();
+    for (auto model : scene->additional_model_list) {
+        numMeshes += model->meshes.size();
+    }
     vertexBuffer.resize(numMeshes);
     normalBuffer.resize(numMeshes);
     texcoordBuffer.resize(numMeshes);
@@ -165,9 +173,10 @@ namespace osc {
     std::vector<CUdeviceptr> d_indices(numMeshes);
     std::vector<uint32_t> triangleInputFlags(numMeshes);
 
-    for (int meshID=0;meshID<numMeshes;meshID++) {
+    int totalmeshID = 0;
+    for (int meshID=0;meshID< (int)scene->base_model->meshes.size();meshID++) {
       // upload the model to the device: the builder
-      TriangleMesh &mesh = *model->meshes[meshID];
+      TriangleMesh &mesh = *scene->base_model->meshes[meshID];
       vertexBuffer[meshID].alloc_and_upload(mesh.vertex);
       indexBuffer[meshID].alloc_and_upload(mesh.index);
       if (!mesh.normal.empty())
@@ -204,6 +213,50 @@ namespace osc {
       triangleInput[meshID].triangleArray.sbtIndexOffsetSizeInBytes   = 0; 
       triangleInput[meshID].triangleArray.sbtIndexOffsetStrideInBytes = 0; 
     }
+    totalmeshID += (int)scene->base_model->meshes.size();
+    for (auto model : scene->additional_model_list) {
+        for (int meshID = totalmeshID; meshID < totalmeshID + (int)model->meshes.size(); meshID++) {
+            // upload the model to the device: the builder
+            TriangleMesh& mesh = *model->meshes[meshID- totalmeshID];
+            vertexBuffer[meshID].alloc_and_upload(mesh.vertex);
+            indexBuffer[meshID].alloc_and_upload(mesh.index);
+            if (!mesh.normal.empty())
+                normalBuffer[meshID].alloc_and_upload(mesh.normal);
+            if (!mesh.texcoord.empty())
+                texcoordBuffer[meshID].alloc_and_upload(mesh.texcoord);
+
+            triangleInput[meshID] = {};
+            triangleInput[meshID].type
+                = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+
+            // create local variables, because we need a *pointer* to the
+            // device pointers
+            d_vertices[meshID] = vertexBuffer[meshID].d_pointer();
+            d_indices[meshID] = indexBuffer[meshID].d_pointer();
+
+            triangleInput[meshID].triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
+            triangleInput[meshID].triangleArray.vertexStrideInBytes = sizeof(vec3f);
+            triangleInput[meshID].triangleArray.numVertices = (int)mesh.vertex.size();
+            triangleInput[meshID].triangleArray.vertexBuffers = &d_vertices[meshID];
+
+            triangleInput[meshID].triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+            triangleInput[meshID].triangleArray.indexStrideInBytes = sizeof(vec3i);
+            triangleInput[meshID].triangleArray.numIndexTriplets = (int)mesh.index.size();
+            triangleInput[meshID].triangleArray.indexBuffer = d_indices[meshID];
+
+            triangleInputFlags[meshID] = 0;
+
+            // in this example we have one SBT entry, and no per-primitive
+            // materials:
+            triangleInput[meshID].triangleArray.flags = &triangleInputFlags[meshID];
+            triangleInput[meshID].triangleArray.numSbtRecords = 1;
+            triangleInput[meshID].triangleArray.sbtIndexOffsetBuffer = 0;
+            triangleInput[meshID].triangleArray.sbtIndexOffsetSizeInBytes = 0;
+            triangleInput[meshID].triangleArray.sbtIndexOffsetStrideInBytes = 0;
+        }
+        totalmeshID += (int)model->meshes.size();
+    }
+    std::cout << "total mesh id at acce = " << totalmeshID << std::endl;
     // ==================================================================
     // BLAS setup
     // ==================================================================
@@ -340,14 +393,12 @@ namespace osc {
                 (optixContext,context_log_cb,nullptr,4));
   }
 
-
-
   /*! creates the module that contains all the programs we are going
     to use. in this simple example, we use a single module from a
     single .cu file, using a single embedded ptx string */
   void SampleRenderer::createModule()
   {
-    moduleCompileOptions.maxRegisterCount  = 50;
+    moduleCompileOptions.maxRegisterCount  = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
     moduleCompileOptions.optLevel          = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
     moduleCompileOptions.debugLevel        = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
 
@@ -359,7 +410,7 @@ namespace osc {
     pipelineCompileOptions.exceptionFlags     = OPTIX_EXCEPTION_FLAG_NONE;
     pipelineCompileOptions.pipelineLaunchParamsVariableName = "optixLaunchParams";
       
-    pipelineLinkOptions.maxTraceDepth          = 2;
+    pipelineLinkOptions.maxTraceDepth          = 20;
       
     const std::string ptxCode = embedded_ptx_code;
       
@@ -376,8 +427,6 @@ namespace osc {
     if (sizeof_log > 1) PRINT(log);
   }
     
-
-
   /*! does all setup for the raygen program(s) we are going to use */
   void SampleRenderer::createRaygenPrograms()
   {
@@ -572,28 +621,81 @@ namespace osc {
     // ------------------------------------------------------------------
     // build hitgroup records
     // ------------------------------------------------------------------
-    int numObjects = (int)model->meshes.size();
-    std::vector<HitgroupRecord> hitgroupRecords;
-    for (int meshID=0;meshID<numObjects;meshID++) {
-      for (int rayID=0;rayID<RAY_TYPE_COUNT;rayID++) {
-        auto mesh = model->meshes[meshID];
-      
-        HitgroupRecord rec;
-        OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[rayID],&rec));
-        rec.data.color   = mesh->diffuse;
-        if (mesh->diffuseTextureID >= 0 && mesh->diffuseTextureID < textureObjects.size()) {
-          rec.data.hasTexture = true;
-          rec.data.texture    = textureObjects[mesh->diffuseTextureID];
-        } else {
-          rec.data.hasTexture = false;
-        }
-        rec.data.index    = (vec3i*)indexBuffer[meshID].d_pointer();
-        rec.data.vertex   = (vec3f*)vertexBuffer[meshID].d_pointer();
-        rec.data.normal   = (vec3f*)normalBuffer[meshID].d_pointer();
-        rec.data.texcoord = (vec2f*)texcoordBuffer[meshID].d_pointer();
-        hitgroupRecords.push_back(rec);
-      }
+    int numObjects = (int)scene->base_model->meshes.size();
+    for (auto model : scene->additional_model_list) {
+        numObjects += model->meshes.size();
     }
+    std::vector<HitgroupRecord> hitgroupRecords;
+
+    int totalmeshID = 0;
+    for (int meshID = 0; meshID < (int)scene->base_model->meshes.size(); meshID++) {
+        for (int rayID = 0; rayID < RAY_TYPE_COUNT; rayID++) {
+            auto mesh = scene->base_model->meshes[meshID];
+
+            HitgroupRecord rec;
+            OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[rayID], &rec));
+            rec.data.kd = mesh->mat->kd;
+            rec.data.ks = mesh->mat->ks;
+            rec.data.roughness_square = mesh->mat->roughness_square;
+            rec.data.type = (int)mesh->mat->type;
+            if (mesh->mat->has_kd_map) {
+                rec.data.hasKdTexture = true;
+                rec.data.kdTexture = textureObjects[mesh->mat->kd_map_id];
+            }
+            else {
+                rec.data.hasKdTexture = false;
+            }
+            if (mesh->mat->has_ks_map) {
+                rec.data.hasKsTexture = true;
+                rec.data.ksTexture = textureObjects[mesh->mat->ks_map_id];
+            }
+            else {
+                rec.data.hasKsTexture = false;
+            }
+
+            rec.data.index = (vec3i*)indexBuffer[meshID].d_pointer();
+            rec.data.vertex = (vec3f*)vertexBuffer[meshID].d_pointer();
+            rec.data.normal = (vec3f*)normalBuffer[meshID].d_pointer();
+            rec.data.texcoord = (vec2f*)texcoordBuffer[meshID].d_pointer();
+            hitgroupRecords.push_back(rec);
+        }
+    }
+    totalmeshID += (int)scene->base_model->meshes.size();
+    for (auto model : scene->additional_model_list) {
+        for (int meshID = totalmeshID; meshID < totalmeshID + (int)model->meshes.size(); meshID++) {
+            for (int rayID = 0; rayID < RAY_TYPE_COUNT; rayID++) {
+                auto mesh = model->meshes[meshID - totalmeshID];
+
+                HitgroupRecord rec;
+                OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[rayID], &rec));
+                rec.data.kd = mesh->mat->kd;
+                rec.data.ks = mesh->mat->ks;
+                rec.data.roughness_square = mesh->mat->roughness_square;
+                rec.data.type = (int)mesh->mat->type;
+                if (mesh->mat->has_kd_map) {
+                    rec.data.hasKdTexture = true;
+                    rec.data.kdTexture = textureObjects[mesh->mat->kd_map_id];
+                }
+                else {
+                    rec.data.hasKdTexture = false;
+                }
+                if (mesh->mat->has_ks_map) {
+                    rec.data.hasKsTexture = true;
+                    rec.data.ksTexture = textureObjects[mesh->mat->ks_map_id];
+                }
+                else {
+                    rec.data.hasKsTexture = false;
+                }
+                rec.data.index = (vec3i*)indexBuffer[meshID].d_pointer();
+                rec.data.vertex = (vec3f*)vertexBuffer[meshID].d_pointer();
+                rec.data.normal = (vec3f*)normalBuffer[meshID].d_pointer();
+                rec.data.texcoord = (vec2f*)texcoordBuffer[meshID].d_pointer();
+                hitgroupRecords.push_back(rec);
+            }
+        }
+        totalmeshID += (int)model->meshes.size();
+    }
+    std::cout << "total mesh id at sbt = " << hitgroupRecords.size() << std::endl;
     hitgroupRecordsBuffer.alloc_and_upload(hitgroupRecords);
     sbt.hitgroupRecordBase          = hitgroupRecordsBuffer.d_pointer();
     sbt.hitgroupRecordStrideInBytes = sizeof(HitgroupRecord);
@@ -611,9 +713,10 @@ namespace osc {
 
     if (!accumulate)
       launchParams.frame.frameID = 0;
+    launchParams.production = false;
     launchParamsBuffer.upload(&launchParams,1);
     launchParams.frame.frameID++;
-    
+
     OPTIX_CHECK(optixLaunch(/*! pipeline we're launching launch: */
                             pipeline,stream,
                             /*! parameters and SBT */
@@ -630,10 +733,9 @@ namespace osc {
 
     OptixDenoiserParams denoiserParams;
     denoiserParams.denoiseAlpha = 1;
-#if OPTIX_VERSION >= 70300
     if (denoiserIntensity.sizeInBytes != sizeof(float))
         denoiserIntensity.alloc(sizeof(float));
-#endif
+
     denoiserParams.hdrIntensity = denoiserIntensity.d_pointer();
     denoiserParams.blendFactor  = 1.f/(launchParams.frame.frameID);
     
@@ -705,14 +807,14 @@ namespace osc {
                    (CUdeviceptr)denoiserScratch.d_pointer(),
                    denoiserScratch.size()));
       
-#if OPTIX_VERSION >= 70300
-    OptixDenoiserGuideLayer denoiserGuideLayer = {};
-    denoiserGuideLayer.albedo = inputLayer[1];
-    denoiserGuideLayer.normal = inputLayer[2];
 
-    OptixDenoiserLayer denoiserLayer = {};
-    denoiserLayer.input = inputLayer[0];
-    denoiserLayer.output = outputLayer;
+      OptixDenoiserGuideLayer denoiserGuideLayer = {};
+      denoiserGuideLayer.albedo = inputLayer[1];
+      denoiserGuideLayer.normal = inputLayer[2];
+      
+      OptixDenoiserLayer denoiserLayer = {};
+      denoiserLayer.input = inputLayer[0];
+      denoiserLayer.output = outputLayer;
 
       OPTIX_CHECK(optixDenoiserInvoke(denoiser,
                                       /*stream*/0,
@@ -725,19 +827,7 @@ namespace osc {
                                       /*inputOffsetY*/0,
                                       denoiserScratch.d_pointer(),
                                       denoiserScratch.size()));
-#else
-      OPTIX_CHECK(optixDenoiserInvoke(denoiser,
-                                      /*stream*/0,
-                                      &denoiserParams,
-                                      denoiserState.d_pointer(),
-                                      denoiserState.size(),
-                                      &inputLayer[0],2,
-                                      /*inputOffsetX*/0,
-                                      /*inputOffsetY*/0,
-                                      &outputLayer,
-                                      denoiserScratch.d_pointer(),
-                                      denoiserScratch.size()));
-#endif
+
     } else {
       cudaMemcpy((void*)outputLayer.data,(void*)inputLayer[0].data,
                  outputLayer.width*outputLayer.height*sizeof(float4),
@@ -755,12 +845,16 @@ namespace osc {
   /*! set camera to render with */
   void SampleRenderer::setCamera(const Camera &camera)
   {
+    lightBuffer.free();
+    lightBuffer.alloc_and_upload(scene->light_list);
+    launchParams.lights = (light*)lightBuffer.d_pointer();
+    launchParams.numLights = scene->light_list.size();
     lastSetCamera = camera;
     // reset accumulation
     launchParams.frame.frameID = 0;
     launchParams.camera.position  = camera.from;
     launchParams.camera.direction = normalize(camera.at-camera.from);
-    const float cosFovy = 0.66f;
+    const float cosFovy = 0.8f;
     const float aspect
       = float(launchParams.frame.size.x)
       / float(launchParams.frame.size.y);
@@ -778,35 +872,19 @@ namespace osc {
     if (denoiser) {
       OPTIX_CHECK(optixDenoiserDestroy(denoiser));
     };
-
-
     // ------------------------------------------------------------------
     // create the denoiser:
     OptixDenoiserOptions denoiserOptions = {};
-#if OPTIX_VERSION >= 70300
     OPTIX_CHECK(optixDenoiserCreate(optixContext,OPTIX_DENOISER_MODEL_KIND_LDR,&denoiserOptions,&denoiser));
-#else
-    denoiserOptions.inputKind = OPTIX_DENOISER_INPUT_RGB_ALBEDO;
-#if OPTIX_VERSION < 70100
-    // these only exist in 7.0, not 7.1
-    denoiserOptions.pixelFormat = OPTIX_PIXEL_FORMAT_FLOAT4;
-#endif
-
-    OPTIX_CHECK(optixDenoiserCreate(optixContext,&denoiserOptions,&denoiser));
-    OPTIX_CHECK(optixDenoiserSetModel(denoiser,OPTIX_DENOISER_MODEL_KIND_LDR,NULL,0));
-#endif
 
     // .. then compute and allocate memory resources for the denoiser
     OptixDenoiserSizes denoiserReturnSizes;
     OPTIX_CHECK(optixDenoiserComputeMemoryResources(denoiser,newSize.x,newSize.y,
                                                     &denoiserReturnSizes));
 
-#if OPTIX_VERSION < 70100
-    denoiserScratch.resize(denoiserReturnSizes.recommendedScratchSizeInBytes);
-#else
     denoiserScratch.resize(std::max(denoiserReturnSizes.withOverlapScratchSizeInBytes,
                                     denoiserReturnSizes.withoutOverlapScratchSizeInBytes));
-#endif
+
     denoiserState.resize(denoiserReturnSizes.stateSizeInBytes);
     
     // ------------------------------------------------------------------
@@ -816,14 +894,29 @@ namespace osc {
     fbNormal.resize(newSize.x*newSize.y*sizeof(float4));
     fbAlbedo.resize(newSize.x*newSize.y*sizeof(float4));
     finalColorBuffer.resize(newSize.x*newSize.y*sizeof(uint32_t));
-    
+    ScolorBuffer.resize(newSize.x * newSize.y * sizeof(float4));
+    DcolorBuffer.resize(newSize.x * newSize.y * sizeof(float4));
+
+    depth.resize(newSize.x * newSize.y * sizeof(float));
+    roughness.resize(newSize.x * newSize.y * sizeof(float));
+    specular_bounce.resize(newSize.x * newSize.y * sizeof(bool));
+    metallic.resize(newSize.x * newSize.y * sizeof(bool));
+    emissive.resize(newSize.x * newSize.y * sizeof(bool));
+
     // update the launch parameters that we'll pass to the optix
     // launch:
     launchParams.frame.size          = newSize;
     launchParams.frame.colorBuffer   = (float4*)fbColor.d_pointer();
     launchParams.frame.normalBuffer  = (float4*)fbNormal.d_pointer();
     launchParams.frame.albedoBuffer  = (float4*)fbAlbedo.d_pointer();
+    launchParams.frame.ScolorBuffer = (float4*)ScolorBuffer.d_pointer();
+    launchParams.frame.DcolorBuffer = (float4*)DcolorBuffer.d_pointer();
 
+    launchParams.frame.depth = (float*)depth.d_pointer();
+    launchParams.frame.roughness = (float*)roughness.d_pointer();
+    launchParams.frame.specular_bounce = (bool*)specular_bounce.d_pointer();
+    launchParams.frame.metallic = (bool*)metallic.d_pointer();
+    launchParams.frame.emissive = (bool*)emissive.d_pointer();
     // and re-set the camera, since aspect may have changed
     setCamera(lastSetCamera);
 
@@ -839,8 +932,175 @@ namespace osc {
   /*! download the rendered color buffer */
   void SampleRenderer::downloadPixels(uint32_t h_pixels[])
   {
-    finalColorBuffer.download(h_pixels,
-                              launchParams.frame.size.x*launchParams.frame.size.y);
+      finalColorBuffer.download(h_pixels,
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
   }
+
+  void SampleRenderer::downloadframe(fullframe& frame) {
+      vec4f* temp = frame.color.data();
+      denoisedBuffer.download(temp,
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+
+
+      ScolorBuffer.download(frame.Scolor.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+      DcolorBuffer.download(frame.Dcolor.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+
+      fbNormal.download(frame.normalBuffer.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+      fbAlbedo.download(frame.albedoBuffer.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+
+      depth.download(frame.depth.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+      roughness.download(frame.roughness.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+      specular_bounce.download(frame.specular_bounce,
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+      metallic.download(frame.metallic,
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+      emissive.download(frame.emissive,
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
+
+  }
+
+  void SampleRenderer::productionRender(int frameID, int samplesPerPixel, bool denoiserOn)
+  {
+      // sanity check: make sure we launch only after first resize is
+      // already done:
+      if (launchParams.frame.size.x == 0) return;
+      
+      launchParams.frame.frameID = frameID;
+      launchParams.numPixelSamples = samplesPerPixel;
+      launchParams.production = true;
+      launchParamsBuffer.upload(&launchParams, 1);
+
+      OPTIX_CHECK(optixLaunch(/*! pipeline we're launching launch: */
+          pipeline, stream,
+          /*! parameters and SBT */
+          launchParamsBuffer.d_pointer(),
+          launchParamsBuffer.sizeInBytes,
+          &sbt,
+          /*! dimensions of the launch: */
+          launchParams.frame.size.x,
+          launchParams.frame.size.y,
+          1
+      ));
+
+      denoiserIntensity.resize(sizeof(float));
+
+      OptixDenoiserParams denoiserParams;
+      denoiserParams.denoiseAlpha = 1;
+      if (denoiserIntensity.sizeInBytes != sizeof(float))
+          denoiserIntensity.alloc(sizeof(float));
+
+      denoiserParams.hdrIntensity = denoiserIntensity.d_pointer();
+      denoiserParams.blendFactor = 1.f / (launchParams.frame.frameID);
+
+      // -------------------------------------------------------
+      OptixImage2D inputLayer[3];
+      inputLayer[0].data = fbColor.d_pointer();
+      /// Width of the image (in pixels)
+      inputLayer[0].width = launchParams.frame.size.x;
+      /// Height of the image (in pixels)
+      inputLayer[0].height = launchParams.frame.size.y;
+      /// Stride between subsequent rows of the image (in bytes).
+      inputLayer[0].rowStrideInBytes = launchParams.frame.size.x * sizeof(float4);
+      /// Stride between subsequent pixels of the image (in bytes).
+      /// For now, only 0 or the value that corresponds to a dense packing of pixels (no gaps) is supported.
+      inputLayer[0].pixelStrideInBytes = sizeof(float4);
+      /// Pixel format.
+      inputLayer[0].format = OPTIX_PIXEL_FORMAT_FLOAT4;
+
+      // ..................................................................
+      inputLayer[2].data = fbNormal.d_pointer();
+      /// Width of the image (in pixels)
+      inputLayer[2].width = launchParams.frame.size.x;
+      /// Height of the image (in pixels)
+      inputLayer[2].height = launchParams.frame.size.y;
+      /// Stride between subsequent rows of the image (in bytes).
+      inputLayer[2].rowStrideInBytes = launchParams.frame.size.x * sizeof(float4);
+      /// Stride between subsequent pixels of the image (in bytes).
+      /// For now, only 0 or the value that corresponds to a dense packing of pixels (no gaps) is supported.
+      inputLayer[2].pixelStrideInBytes = sizeof(float4);
+      /// Pixel format.
+      inputLayer[2].format = OPTIX_PIXEL_FORMAT_FLOAT4;
+
+      // ..................................................................
+      inputLayer[1].data = fbAlbedo.d_pointer();
+      /// Width of the image (in pixels)
+      inputLayer[1].width = launchParams.frame.size.x;
+      /// Height of the image (in pixels)
+      inputLayer[1].height = launchParams.frame.size.y;
+      /// Stride between subsequent rows of the image (in bytes).
+      inputLayer[1].rowStrideInBytes = launchParams.frame.size.x * sizeof(float4);
+      /// Stride between subsequent pixels of the image (in bytes).
+      /// For now, only 0 or the value that corresponds to a dense packing of pixels (no gaps) is supported.
+      inputLayer[1].pixelStrideInBytes = sizeof(float4);
+      /// Pixel format.
+      inputLayer[1].format = OPTIX_PIXEL_FORMAT_FLOAT4;
+
+      // -------------------------------------------------------
+      OptixImage2D outputLayer;
+      outputLayer.data = denoisedBuffer.d_pointer();
+      /// Width of the image (in pixels)
+      outputLayer.width = launchParams.frame.size.x;
+      /// Height of the image (in pixels)
+      outputLayer.height = launchParams.frame.size.y;
+      /// Stride between subsequent rows of the image (in bytes).
+      outputLayer.rowStrideInBytes = launchParams.frame.size.x * sizeof(float4);
+      /// Stride between subsequent pixels of the image (in bytes).
+      /// For now, only 0 or the value that corresponds to a dense packing of pixels (no gaps) is supported.
+      outputLayer.pixelStrideInBytes = sizeof(float4);
+      /// Pixel format.
+      outputLayer.format = OPTIX_PIXEL_FORMAT_FLOAT4;
+
+      // -------------------------------------------------------
+      if (denoiserOn) {
+          OPTIX_CHECK(optixDenoiserComputeIntensity
+          (denoiser,
+              /*stream*/0,
+              &inputLayer[0],
+              (CUdeviceptr)denoiserIntensity.d_pointer(),
+              (CUdeviceptr)denoiserScratch.d_pointer(),
+              denoiserScratch.size()));
+
+
+          OptixDenoiserGuideLayer denoiserGuideLayer = {};
+          denoiserGuideLayer.albedo = inputLayer[1];
+          denoiserGuideLayer.normal = inputLayer[2];
+
+          OptixDenoiserLayer denoiserLayer = {};
+          denoiserLayer.input = inputLayer[0];
+          denoiserLayer.output = outputLayer;
+
+          OPTIX_CHECK(optixDenoiserInvoke(denoiser,
+              /*stream*/0,
+              &denoiserParams,
+              denoiserState.d_pointer(),
+              denoiserState.size(),
+              &denoiserGuideLayer,
+              &denoiserLayer, 1,
+              /*inputOffsetX*/0,
+              /*inputOffsetY*/0,
+              denoiserScratch.d_pointer(),
+              denoiserScratch.size()));
+
+      }
+      else {
+          cudaMemcpy((void*)outputLayer.data, (void*)inputLayer[0].data,
+              outputLayer.width * outputLayer.height * sizeof(float4),
+              cudaMemcpyDeviceToDevice);
+      }
+      computeFinalPixelColors();
+
+      // sync - make sure the frame is rendered before we download and
+      // display (obviously, for a high-performance application you
+      // want to use streams and double-buffering, but for this simple
+      // example, this will have to do)
+      CUDA_SYNC_CHECK();
+  }
+
   
 } // ::osc

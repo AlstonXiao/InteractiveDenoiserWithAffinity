@@ -19,7 +19,7 @@
 // our own classes, partly shared between host and device
 #include "CUDABuffer.h"
 #include "LaunchParams.h"
-#include "Model.h"
+#include "Scene.h"
 
 /*! \namespace osc - Optix Siggraph Course */
 namespace osc {
@@ -33,6 +33,20 @@ namespace osc {
     vec3f up;
   };
   
+  struct fullframe {
+      std::vector<vec4f> color;
+      std::vector<vec4f> Scolor;
+      std::vector<vec4f> Dcolor;
+
+      std::vector<vec4f> normalBuffer;
+      std::vector<vec4f> albedoBuffer;
+      std::vector<float> depth;
+      std::vector<float> roughness;
+      bool*  specular_bounce;
+      bool*  metallic;
+      bool*  emissive;
+  };
+
   /*! a sample OptiX-7 renderer that demonstrates how to set up
       context, module, programs, pipeline, SBT, etc, and perform a
       valid launch that renders some pixel (using a simple test
@@ -45,16 +59,20 @@ namespace osc {
   public:
     /*! constructor - performs all setup, including initializing
       optix, creates module, pipeline, programs, SBT, etc. */
-    SampleRenderer(const Model *model, const QuadLight &light);
-
+    SampleRenderer(const Scene *scene);
+    void buildScene();
     /*! render one frame */
     void render();
+
+    void productionRender(int frameID, int samplesPerPixel, bool denoiserOn);
 
     /*! resize frame buffer to given resolution */
     void resize(const vec2i &newSize);
 
     /*! download the rendered color buffer */
     void downloadPixels(uint32_t h_pixels[]);
+
+    void downloadframe(fullframe& frame);
 
     /*! set camera to render with */
     void setCamera(const Camera &camera);
@@ -143,6 +161,7 @@ namespace osc {
     LaunchParams launchParams;
   protected:
     CUDABuffer   launchParamsBuffer;
+    CUDABuffer   lightBuffer;
     /*! @} */
 
     /*! the color buffer we use during _rendering_, which is a bit
@@ -152,7 +171,16 @@ namespace osc {
     CUDABuffer fbColor;
     CUDABuffer fbNormal;
     CUDABuffer fbAlbedo;
-    
+
+    CUDABuffer ScolorBuffer;
+    CUDABuffer DcolorBuffer;
+
+    CUDABuffer depth;
+    CUDABuffer roughness;
+    CUDABuffer specular_bounce;
+    CUDABuffer metallic;
+    CUDABuffer emissive;
+
     /*! output of the denoiser pass, in float4 */
     CUDABuffer denoisedBuffer;
     
@@ -168,7 +196,7 @@ namespace osc {
     Camera lastSetCamera;
     
     /*! the model we are going to trace rays against */
-    const Model *model;
+    const Scene* scene;
     
     /*! @{ one buffer per input mesh */
     std::vector<CUDABuffer> vertexBuffer;

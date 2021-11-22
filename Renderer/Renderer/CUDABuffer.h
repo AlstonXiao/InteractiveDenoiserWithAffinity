@@ -56,7 +56,8 @@ namespace osc {
     template<typename T>
     void alloc_and_upload(const std::vector<T> &vt)
     {
-      alloc(vt.size()*sizeof(T));
+        size_t a = vt.size() * sizeof(T);
+      alloc(a);
       upload((const T*)vt.data(),vt.size());
     }
     

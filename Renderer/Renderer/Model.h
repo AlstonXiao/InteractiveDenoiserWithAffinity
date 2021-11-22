@@ -18,11 +18,16 @@
 
 #include "gdt/math/AffineSpace.h"
 #include <vector>
+#include "Material.h"
 
 /*! \namespace osc - Optix Siggraph Course */
 namespace osc {
   using namespace gdt;
-  
+
+  struct QuadLight {
+      vec3f origin, du, dv, power;
+  };
+
   /*! a simple indexed triangle mesh that our sample renderer will
       render */
   struct TriangleMesh {
@@ -32,34 +37,23 @@ namespace osc {
     std::vector<vec3i> index;
 
     // material data:
-    vec3f              diffuse;
-    int                diffuseTextureID { -1 };
+    Material* mat;
   };
 
-  struct QuadLight {
-    vec3f origin, du, dv, power;
-  };
-  
-  struct Texture {
-    ~Texture()
-    { if (pixel) delete[] pixel; }
-    
-    uint32_t *pixel      { nullptr };
-    vec2i     resolution { -1 };
-  };
   
   struct Model {
     ~Model()
     {
       for (auto mesh : meshes) delete mesh;
-      for (auto texture : textures) delete texture;
     }
     
     std::vector<TriangleMesh *> meshes;
-    std::vector<Texture *>      textures;
+    AffineSpace3f a;
+
     //! bounding box of all vertices in the model
     box3f bounds;
   };
 
-  Model *loadOBJ(const std::string &objFile);
+  Model *loadOBJ(const std::string &objFile, std::vector<Texture* >& texture_list, std::map<std::string, int>& knownTextures);
+  Model* loadPBRT(const std::string& pbrtFile, std::vector<Texture* >& texture_list, std::map<std::string, int>& knownTextures, std::vector<QuadLight>& lightList);
 }

@@ -26,24 +26,43 @@ namespace osc {
   enum { RADIANCE_RAY_TYPE=0, SHADOW_RAY_TYPE, RAY_TYPE_COUNT };
 
   struct TriangleMeshSBTData {
-    vec3f  color;
     vec3f *vertex;
     vec3f *normal;
     vec2f *texcoord;
     vec3i *index;
-    bool                hasTexture;
-    cudaTextureObject_t texture;
+
+    vec3f kd;
+    vec3f ks;
+    float roughness_square;
+
+    //{ matte, plastic, substrate, metal, uber, mirror };
+    int type;
+
+    bool                hasKdTexture;
+    bool                hasKsTexture;
+    cudaTextureObject_t kdTexture;
+    cudaTextureObject_t ksTexture;
   };
-  
+
+  struct light {
+      vec3f origin, du, dv, power;
+  };
+
   struct LaunchParams
   {
     int numPixelSamples = 1;
     struct {
       int       frameID = 0;
-      float4   *colorBuffer;
+      float4*  colorBuffer;
+      float4   *ScolorBuffer;
+      float4*   DcolorBuffer;
       float4   *normalBuffer;
       float4   *albedoBuffer;
-      
+      float* depth;
+      float* roughness;
+      bool* specular_bounce;
+      bool* metallic;
+      bool* emissive;
       /*! the size of the frame buffer to render */
       vec2i     size;
     } frame;
@@ -55,10 +74,10 @@ namespace osc {
       vec3f vertical;
     } camera;
 
-    struct {
-      vec3f origin, du, dv, power;
-    } light;
-    
+    light* lights;
+    int numLights;
+    bool production;
+
     OptixTraversableHandle traversable;
   };
 

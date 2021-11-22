@@ -15,23 +15,39 @@
 // ======================================================================== //
 
 #include "SampleRenderer.h"
+#include "Scene.h"
 
 // our helper library for window handling
 #include "glfWindow/GLFWindow.h"
 #include <GL/gl.h>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include <filesystem>
+#include <random>
 
+inline float random(std::mt19937& rnd) {
+    std::uniform_real_distribution<> dist(0, 1);
+    return dist(rnd);
+}
+
+inline int number_of_files_in_directory(const std::string& path) {
+    int count = 0;
+    std::filesystem::path p1(path);
+    for (auto& p : std::filesystem::directory_iterator(p1)) ++count;
+    return count;
+
+}
 /*! \namespace osc - Optix Siggraph Course */
 namespace osc {
 
   struct SampleWindow : public GLFCameraWindow
   {
     SampleWindow(const std::string &title,
-                 const Model *model,
+                 const Scene *scene,
                  const Camera &camera,
-                 const QuadLight &light,
                  const float worldScale)
       : GLFCameraWindow(title,camera.from,camera.at,camera.up,worldScale),
-        sample(model,light)
+        sample(scene)
     {
       sample.setCamera(camera);
     }
@@ -50,6 +66,7 @@ namespace osc {
     virtual void draw() override
     {
       sample.downloadPixels(pixels.data());
+
       if (fbTexture == 0)
         glGenTextures(1, &fbTexture);
       
@@ -133,53 +150,191 @@ namespace osc {
     std::vector<uint32_t> pixels;
   };
   
-  
+  class imageCreater
+  {
+  public:
+      imageCreater(Scene* Iscene, Camera& camera) : sample(Iscene)
+      {
+          row = 1024;
+          column = 1024;
+          totalsize = row * column;
+          sample.setCamera(camera);
+          sample.resize(vec2i(row, column));
+          frame.albedoBuffer.resize(totalsize);
+          frame.Scolor.resize(totalsize);
+          frame.Dcolor.resize(totalsize);
+          frame.color.resize(totalsize);
+          frame.depth.resize(totalsize);
+          frame.roughness.resize(totalsize);
+          frame.normalBuffer.resize(totalsize);
+          frame.metallic = new bool[totalsize];
+          frame.emissive = new bool[totalsize];
+          frame.specular_bounce = new bool[totalsize];
+          scene = Iscene;
+      }
+      ~imageCreater() {}
+
+      void render(const std::string& outputPath) {
+          int samples = number_of_files_in_directory(outputPath);
+          std::string newPath = outputPath + "/" + std::to_string(samples);
+          std::filesystem::create_directory(std::filesystem::path(newPath));
+
+          // first render 8 single sampled images
+          for (int i = 0; i < 8; i++) {
+              sample.productionRender(i, 1, false);
+              sample.downloadframe(frame);
+              writeOutput(i, newPath);
+          }
+          sample.productionRender(1024, 768, true);
+          sample.downloadframe(frame);
+
+          std::string finalImagePath = std::string(newPath) + std::string("/") + std::string("_reference.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.color.data());
+      }
+      
+      void randomizeCamera(std::mt19937& rnd){
+
+        if (random(rnd) > 0.5) {
+            vec3f lower = vec3f(-2.5, 2.79243, -0.18591);
+            vec3f diff = vec3f(-0.5, 0, -2.5) - lower;
+            vec3f camera_pos = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
+
+            lower = vec3f(0.5, 2.79243, -0.18591);
+            diff = vec3f(2.5, 0, -2.5) - lower;
+            vec3f camera_lookat = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
+            Camera camera = { camera_pos,camera_lookat,vec3f(0.f,1.f,0.f) };
+            sample.setCamera(camera);
+        }
+        else {
+            vec3f lower = vec3f(0.5, 2.79243, -0.18591);
+            vec3f diff = vec3f(2.5, 0, -2.5) - lower;
+            
+            vec3f camera_pos = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
+
+            lower = vec3f(-2.5, 2.79243, -0.18591);
+            diff = vec3f(-0.5, 0, -2.5) - lower;
+            vec3f camera_lookat = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
+            Camera camera = { camera_pos,camera_lookat,vec3f(0.f,1.f,0.f) };
+            sample.setCamera(camera);
+        }
+      }
+      void build() {
+          sample.buildScene();
+      }
+      fullframe frame;
+   private:
+      
+      void writeOutput(int sampleID, const std::string& path) {
+          std::cout << "outputing image" << std::endl;
+          std::string finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_finalImage.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.color.data());
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_diffuse.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.Dcolor.data());
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_specular.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.Scolor.data());
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_albedo.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.albedoBuffer.data());
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_roughness.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 1, (float*)frame.roughness.data());
+          
+          float maxD = 0;
+          for (auto depth : frame.depth) {
+              maxD = fmax(maxD, depth);
+          }
+          for (int i = 0; i < frame.depth.size(); i++) {
+              frame.depth[i] = frame.depth[i] > 0 ? frame.depth[i] / maxD : frame.depth[i];
+          }
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_depth.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 1, (float*)frame.depth.data());
+
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_normal.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.normalBuffer.data());
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_metallic.png");
+          std::vector<UINT8> metallic;
+          for (int rowID = 0; rowID < row * column; rowID++) {
+              metallic.push_back(frame.metallic[rowID] ? 255 : 0);
+          }
+          stbi_write_png(finalImagePath.c_str(), row, column, 1, metallic.data(), row);
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_specularReflect.png");
+          std::vector<UINT8> specularReflect;
+          for (int rowID = 0; rowID < row * column; rowID++) {
+              specularReflect.push_back(frame.specular_bounce[rowID] ? 255 : 0);
+          }
+          stbi_write_png(finalImagePath.c_str(), row, column, 1, specularReflect.data(), row);
+
+          finalImagePath = std::string(path) + std::string("/") + std::to_string(sampleID) + std::string("_emissive.png");
+          std::vector<UINT8> emissive;
+          for (int rowID = 0; rowID < row * column; rowID++) {
+              emissive.push_back(frame.emissive[rowID] ? 255 : 0);
+          }
+          stbi_write_png(finalImagePath.c_str(), row, column, 1, emissive.data(), row);
+      }
+      int row, column, totalsize;
+      SampleRenderer sample;
+      Scene* scene;
+  };
+
+
   /*! main entry point to this example - initially optix, print hello
     world, then exit */
   extern "C" int main(int ac, char **av)
   {
-    try {
-      Model *model = loadOBJ(
-#ifdef _WIN32
-      // on windows, visual studio creates _two_ levels of build dir
-      // (x86/Release)
-      "../../models/sponza.obj"
-#else
-      // on linux, common practice is to have ONE level of build dir
-      // (say, <project>/build/)...
-      "../models/sponza.obj"
-#endif
-                             );
-      Camera camera = { /*from*/vec3f(-1293.07f, 154.681f, -0.7304f),
-                        /* at */model->bounds.center()-vec3f(0,400,0),
-                        /* up */vec3f(0.f,1.f,0.f) };
+    
+    std::random_device rd;   // non-deterministic generator
+    std::mt19937 rnd(rd());
 
-      // some simple, hard-coded light ... obviously, only works for sponza
-      const float light_size = 200.f;
-      QuadLight light = { /* origin */ vec3f(-1000-light_size,800,-light_size),
-                          /* edge 1 */ vec3f(2.f*light_size,0,0),
-                          /* edge 2 */ vec3f(0,0,2.f*light_size),
-                          /* power */  vec3f(3000000.f) };
-                      
-      // something approximating the scale of the world, so the
-      // camera knows how much to move for any given user interaction:
-      const float worldScale = length(model->bounds.span());
+    Scene* testScene = new Scene;
+    
+    testScene->loadBaseScene("C:/Users/Alsto/Desktop/bathroom/scene.pbrt");
+    std::cout << "Base Scene Loaded" << std::endl;
+    // testScene->loadAdditionalScene("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/models", 20, rnd);
+    std::cout << "additional mesh Loaded" << std::endl;
+    Camera camera = { /*from*/vec3f(0.158333f, 0.991688f, -0.235041f),
+        /* at */vec3f(-2.89823, 1, -3.04425),
+        /* up */vec3f(0.f,1.f,0.f) };
+    testScene->bounds.lower = vec3f(-2.5, 2.79243, -0.18591);
+    testScene->bounds.upper = vec3f(2.5, 0, -2.5);
 
-      SampleWindow *window = new SampleWindow("Optix 7 Course Example",
-                                              model,camera,light,worldScale);
-      window->enableFlyMode();
-      
-      std::cout << "Press 'a' to enable/disable accumulation/progressive refinement" << std::endl;
-      std::cout << "Press ' ' to enable/disable denoising" << std::endl;
-      std::cout << "Press ',' to reduce the number of paths/pixel" << std::endl;
-      std::cout << "Press '.' to increase the number of paths/pixel" << std::endl;
-      window->run();
-      
-    } catch (std::runtime_error& e) {
-      std::cout << GDT_TERMINAL_RED << "FATAL ERROR: " << e.what()
+    // testScene->randomizeOBJs("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/textures", rnd);
+    testScene->addRandomizeLight(rnd);
+    std::cout << "obj randomized" << std::endl;
+    if (ac > 1 ) {
+        try {
+
+            const float worldScale = length(testScene->bounds.span());
+
+            SampleWindow* window = new SampleWindow("Optix 7 Course Example",
+                testScene, camera, worldScale);
+            window->enableFlyMode();
+
+            std::cout << "Press 'a' to enable/disable accumulation/progressive refinement" << std::endl;
+            std::cout << "Press ' ' to enable/disable denoising" << std::endl;
+            std::cout << "Press ',' to reduce the number of paths/pixel" << std::endl;
+            std::cout << "Press '.' to increase the number of paths/pixel" << std::endl;
+            window->run();
+
+        }
+        catch (std::runtime_error& e) {
+            std::cout << GDT_TERMINAL_RED << "FATAL ERROR: " << e.what()
                 << GDT_TERMINAL_DEFAULT << std::endl;
-	  std::cout << "Did you forget to copy sponza.obj and sponza.mtl into your optix7course/models directory?" << std::endl;
-	  exit(1);
+            std::cout << "Did you forget to copy sponza.obj and sponza.mtl into your optix7course/models directory?" << std::endl;
+            exit(1);
+        }
+    }
+    else {
+        imageCreater crtr(testScene, camera);
+        crtr.randomizeCamera(rnd);
+        crtr.build();
+        std::cout << "Start rendering" << std::endl;
+        crtr.render("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/dataset");
+
     }
     return 0;
   }
