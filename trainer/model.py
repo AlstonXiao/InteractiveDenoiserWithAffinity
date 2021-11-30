@@ -21,32 +21,37 @@ class denoiseNet(nn.Module):
         self.FC1perSample = nn.Conv2d(17, 32, 1, 1)
         self.FC2perSample = nn.Conv2d(32, 32, 1, 1) 
         self.FC3perSample = nn.Conv2d(32, 32, 1, 1) 
-        self.embedding_width = 32
+        self.embedding_width =32
 
         # Unet
-        self.unet = UNet(32, 11*11, [64,64,80,96])
+        self.unet = UNet(self.embedding_width, 11*11, [64,64,80,96])
 
     def forward(self, samples):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         #device = 'cpu'
-        radiance = samples["radiance"]
+        # radiance = samples["radiance"]
         features = samples["features"]
-        radiance = radiance.to(device)
+        # radiance = radiance.to(device)
         features = features.to(device)
 
         bs, spp, nf, h, w = features.shape
         
+        radiance = features.mean(1)[:,:,3:141, 3:141]
+        radiance = radiance[:, 0:3] + radiance[:, 3:6]
 
-        flat = features.view([bs*spp, nf, h, w])
-        flat = self.FC1perSample(flat)
-        flat = F.leaky_relu(flat)
-        flat = self.FC2perSample(flat)
-        flat = F.leaky_relu(flat)
-        flat = self.FC3perSample(flat)
-        flat = F.leaky_relu(flat)
+        unfold = torch.nn.Unfold(kernel_size = (11, 11))
+        radiance = (unfold(radiance)).view(bs,363,128,128)
 
-        flat = flat.view(bs, spp, self.embedding_width, h, w)
-        reduced = flat.mean(1)
+        features = features.view([bs*spp, nf, h, w])
+        features = self.FC1perSample(features)
+        features = F.leaky_relu(features)
+        features = self.FC2perSample(features)
+        features = F.leaky_relu(features)
+        features = self.FC3perSample(features)
+        features = F.leaky_relu(features)
+
+        features = features.view(bs, spp, self.embedding_width, h, w)
+        reduced = features.mean(1)
         kernel = self.unet(reduced)
         
         # apply
@@ -57,12 +62,16 @@ class denoiseNet(nn.Module):
         # for layer in range(kernel.shape[0]):
         
         output = torch.zeros(bs, channel, 128, 128).to(device)
+        channelOutput = []
+        layerOutput = []
         # print(kernel.shape)
         for layer in range(kernel.shape[0]):
             for outputchannel in range(channel):
-                output[layer][outputchannel] = (radiance[layer][(outputchannel)*121:(outputchannel+1)*121] * kernel[layer]).sum(0)
-        return output 
-        # return kernel[:, :,8:136,8:136 ]
+                channelOutput.append(torch.sum((radiance[layer][(outputchannel)*121:(outputchannel+1)*121] * kernel[layer]),0))
+            layerOutput.append(torch.stack(channelOutput))
+            
+        return torch.stack(layerOutput), kernel
+        # return kernel[:, :,8:136,8:136 ], kernel
 
 
 

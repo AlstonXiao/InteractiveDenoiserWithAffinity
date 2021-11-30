@@ -11,9 +11,9 @@ from dataset import DenoiseDataset
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device = 'cpu'
-num_epochs = 1000
-batch_size = 4
-learning_rate = 1e-4
+num_epochs = 2000
+batch_size = 1
+learning_rate = 1e-3
 
 model = denoiseNet().to(device)
 model.half()
@@ -47,7 +47,7 @@ for epoch in range(num_epochs):
 
         # Forward pass
         with torch.set_grad_enabled(True):
-            outputs = model(images)
+            outputs,_ = model(images)
             loss = criterion.forward(outputs, labels)
 
             # Backward and optimize
