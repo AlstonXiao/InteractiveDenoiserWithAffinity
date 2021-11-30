@@ -24,11 +24,11 @@ class denoiseNet(nn.Module):
         self.embedding_width =32
 
         # Unet
-        self.unet = UNet(self.embedding_width, 11*11, [64,64,80,96])
+        self.unet = UNet(self.embedding_width, 9, [64,64,80,96])
 
     def forward(self, samples):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        #device = 'cpu'
+        # device = 'cpu'
         radiance = samples["radiance"]
         features = samples["features"]
         radiance = radiance.to(device)
@@ -49,23 +49,68 @@ class denoiseNet(nn.Module):
         kernel = self.unet(reduced)
         
         # apply
-        kernel = kernel[:, :,8:136,8:136 ]
-        kernel = F.softmax(kernel, dim=1)
-        channel = 3
+        # kernel = kernel[:, :,8:136,8:136 ]
+        # kernel = F.softmax(kernel, dim=1)
+        # channel = 3
         
         # for layer in range(kernel.shape[0]):
         
-        output = torch.zeros(bs, channel, 128, 128).to(device)
-        channelOutput = []
-        layerOutput = []
-        # print(kernel.shape)
-        for layer in range(kernel.shape[0]):
-            for outputchannel in range(channel):
-                channelOutput.append(torch.sum((radiance[layer][(outputchannel)*121:(outputchannel+1)*121] * kernel[layer]),0))
-            layerOutput.append(torch.stack(channelOutput))
+        # output = torch.zeros(bs, channel, 128, 128).to(device)
+        # output.
+        # channelOutput = []
+        # layerOutput = []
+        # # print(kernel.shape)
+        # for layer in range(kernel.shape[0]):
+        #     for outputchannel in range(channel):
+        #         channelOutput.append(torch.sum((radiance[layer][(outputchannel)*121:(outputchannel+1)*121] * kernel[layer]),0))
+        #     layerOutput.append(torch.stack(channelOutput))
             
-        return torch.stack(layerOutput), kernel
+        # return torch.stack(layerOutput), kernel
         # return kernel[:, :,8:136,8:136 ], kernel
+        
+        # kernel = f0, a0, c0, f1, a1, ...
+        
+        for KK in range(3):
+            output = []
+            for layer in range(kernel.shape[0]):
+                imageColor1 = []
+                imageColor2 = []
+                imageColor3 = []
+                bs, nf, h, w = radiance.shape
+                for i in range(KK+1, h-KK-1):
+                    rowColor1 = []
+                    rowColor2 = []
+                    rowColor3 = []
+                    for j in range(KK+1, w-KK-1):
+                        weightSum = []
+                        pixelColor1 = []
+                        pixelColor2 = []
+                        pixelColor3 = []
+                        for k in range(-1, 1):
+                            for a in range(-1, 1):
+                                weight = torch.exp(-kernel[layer][KK*3 + 1][i][j] * torch.pow((kernel[layer][KK*3 +0][i+k*KK][j+a*KK] - kernel[layer][KK*3 +0][i][j]), torch.tensor(2).to(device)))
+                                if k == 0 and a == 0:
+                                    weight = kernel[layer][KK*3 +2][i][j]
+                                
+                                weightSum.append(weight)
+                                pixelColor1.append(weight * radiance[layer][0][i+k][j+a])
+                                pixelColor2.append(weight * radiance[layer][2][i+k][j+a])
+                                pixelColor3.append(weight * radiance[layer][1][i+k][j+a])
+                        totalWeight = torch.stack(weightSum).mean()
+                        rowColor1.append(torch.stack(pixelColor1).sum() / totalWeight)
+                        rowColor2.append(torch.stack(pixelColor2).sum() / totalWeight)
+                        rowColor3.append(torch.stack(pixelColor3).sum() / totalWeight)
+                    imageColor1.append(torch.stack(rowColor1))
+                    imageColor2.append(torch.stack(rowColor2))
+                    imageColor3.append(torch.stack(rowColor3))
+                output.append(torch.stack([torch.stack(imageColor1), torch.stack(imageColor2), torch.stack(imageColor3)]))
+            radiance = torch.stack(output)
+
+        e = 2
+        return radiance[:, :, 2:130, 2:130], kernel
+
+
+
 
 
 
