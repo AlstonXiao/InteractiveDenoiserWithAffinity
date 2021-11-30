@@ -29,18 +29,12 @@ class denoiseNet(nn.Module):
     def forward(self, samples):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         #device = 'cpu'
-        # radiance = samples["radiance"]
+        radiance = samples["radiance"]
         features = samples["features"]
-        # radiance = radiance.to(device)
+        radiance = radiance.to(device)
         features = features.to(device)
 
         bs, spp, nf, h, w = features.shape
-        
-        radiance = features.mean(1)[:,:,3:141, 3:141]
-        radiance = radiance[:, 0:3] + radiance[:, 3:6]
-
-        unfold = torch.nn.Unfold(kernel_size = (11, 11))
-        radiance = (unfold(radiance)).view(bs,363,128,128)
 
         features = features.view([bs*spp, nf, h, w])
         features = self.FC1perSample(features)
