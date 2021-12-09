@@ -50,6 +50,7 @@ namespace osc {
         sample(scene)
     {
       sample.setCamera(camera);
+      sample.buildScene();
     }
     
     virtual void render() override
@@ -170,6 +171,7 @@ namespace osc {
           frame.metallic = new bool[totalsize];
           frame.emissive = new bool[totalsize];
           frame.specular_bounce = new bool[totalsize];
+          frame.noDenoisecolor.resize(totalsize);
           scene = Iscene;
       }
       ~imageCreater() {}
@@ -185,38 +187,25 @@ namespace osc {
               sample.downloadframe(frame);
               writeOutput(i, newPath);
           }
-          sample.productionRender(1024, 768, true);
+          sample.productionRender(1024,768, true);
           sample.downloadframe(frame);
 
           std::string finalImagePath = std::string(newPath) + std::string("/") + std::string("_reference.hdr");
           stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.color.data());
+
+          finalImagePath = std::string(newPath) + std::string("/") + std::string("_referenceNODenoise.hdr");
+          stbi_write_hdr(finalImagePath.c_str(), row, column, 4, (float*)frame.noDenoisecolor.data());
       }
       
       void randomizeCamera(std::mt19937& rnd){
+          vec3f lower = scene->bounds.lower;
+          vec3f diff = scene->bounds.upper - lower;
+              
+          vec3f camera_pos = vec3f((random(rnd) / 2 + 0.25) * diff.x, (random(rnd) / 2 + 0.25) * diff.y, (random(rnd) / 2 + 0.25) * diff.z) + lower;
+          vec3f camera_lookat = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
+          Camera camera = { camera_pos,camera_lookat,vec3f(0.f,1.f,0.f) };
+          sample.setCamera(camera);
 
-        if (random(rnd) > 0.5) {
-            vec3f lower = vec3f(-2.5, 2.79243, -0.18591);
-            vec3f diff = vec3f(-0.5, 0, -2.5) - lower;
-            vec3f camera_pos = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
-
-            lower = vec3f(0.5, 2.79243, -0.18591);
-            diff = vec3f(2.5, 0, -2.5) - lower;
-            vec3f camera_lookat = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
-            Camera camera = { camera_pos,camera_lookat,vec3f(0.f,1.f,0.f) };
-            sample.setCamera(camera);
-        }
-        else {
-            vec3f lower = vec3f(0.5, 2.79243, -0.18591);
-            vec3f diff = vec3f(2.5, 0, -2.5) - lower;
-            
-            vec3f camera_pos = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
-
-            lower = vec3f(-2.5, 2.79243, -0.18591);
-            diff = vec3f(-0.5, 0, -2.5) - lower;
-            vec3f camera_lookat = vec3f((random(rnd) / 3 + 0.33) * diff.x, (random(rnd) / 3 + 0.33) * diff.y, (random(rnd) / 3 + 0.33) * diff.z) + lower;
-            Camera camera = { camera_pos,camera_lookat,vec3f(0.f,1.f,0.f) };
-            sample.setCamera(camera);
-        }
       }
       void build() {
           sample.buildScene();
@@ -292,20 +281,49 @@ namespace osc {
 
     Scene* testScene = new Scene;
     
-    testScene->loadBaseScene("C:/Users/Alsto/Desktop/bathroom/scene.pbrt");
+    testScene->loadBaseScene(av[1]);
     std::cout << "Base Scene Loaded" << std::endl;
-    // testScene->loadAdditionalScene("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/models", 20, rnd);
+    testScene->loadAdditionalScene(av[2], 25, rnd);
     std::cout << "additional mesh Loaded" << std::endl;
+
+    //Camera camera = { /*from*/vec3f(4.66618f, 1.0105f, -2.44763f),
+    //    /* at */vec3f(-0.119973, 1.070 , -0.08739),
+    //    /* up */vec3f(0.f,1.f,0.f) };
+
+    // livingR2
+    //Camera camera = { /*from*/vec3f(2.61591f, 1.1982f, 6.2426f),
+    //    /* at */vec3f(-1.719,1.19902, -1.2810),
+    //    /* up */vec3f(0.f,1.f,0.f) };
+   
+    // bedroom
+    //Camera camera = { /*from*/vec3f(3.6575f, 1.01643f, 3.44617f),
+    //    /* at */vec3f(-1.6509, 0.70372, -0.98841),
+    //    /* up */vec3f(0.f,1.f,0.f) };
+    // staircase
+    //Camera camera = { /*from*/vec3f(0.059611f, 0.8482f, 4.7025f),
+    //    /* at */vec3f(0.018419, 2.22941, -3.1899),
+    //    /* up */vec3f(0.f,1.f,0.f) };
+    // Kitchen
+    //Camera camera = { /*from*/vec3f(0.534462f, 1.62298f, 2.95209f),
+    //    /* at */vec3f(-1.94836, 1.5219, -2.46925),
+    //    /* up */vec3f(0.f,1.f,0.f) };
+    // Bathroom
     Camera camera = { /*from*/vec3f(0.158333f, 0.991688f, -0.235041f),
         /* at */vec3f(-2.89823, 1, -3.04425),
         /* up */vec3f(0.f,1.f,0.f) };
-    testScene->bounds.lower = vec3f(-2.5, 2.79243, -0.18591);
-    testScene->bounds.upper = vec3f(2.5, 0, -2.5);
+    
+    testScene->bounds.lower = vec3f(-2.5f, 0.3, -2.5);
+    testScene->bounds.upper = vec3f(2.4f, 2.5f, -0.3f);
+    // staricase
+    // testScene->bounds.lower = vec3f(-4 , 0, -5);
+    // testScene->bounds.upper = vec3f(2.5, 7, 5);
 
-    // testScene->randomizeOBJs("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/textures", rnd);
+    testScene->randomizeOBJs(av[3], rnd);
     testScene->addRandomizeLight(rnd);
+    // testScene->addRandomizeLight(rnd);
+    // testScene->addRandomizeLight(rnd);
     std::cout << "obj randomized" << std::endl;
-    if (ac > 1 ) {
+    if (ac > 5 ) {
         try {
 
             const float worldScale = length(testScene->bounds.span());
@@ -333,7 +351,7 @@ namespace osc {
         crtr.randomizeCamera(rnd);
         crtr.build();
         std::cout << "Start rendering" << std::endl;
-        crtr.render("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/dataset");
+        crtr.render(av[4]);
 
     }
     return 0;

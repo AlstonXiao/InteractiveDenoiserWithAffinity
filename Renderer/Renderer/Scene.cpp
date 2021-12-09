@@ -56,7 +56,7 @@ namespace osc {
                 vec3f diff = bounds.upper - lower;
                 vec3f pos = vec3f(random(rnd) * diff.x, random(rnd) * diff.y, random(rnd) * diff.z) + lower;
 
-                vec3f scale = vec3f(random(rnd) * 2, random(rnd) * 2, random(rnd) * 2);
+                vec3f scale = vec3f(random(rnd) * 1, random(rnd) * 1, random(rnd) * 1);
                 vec3f rotation_axis = normalize(vec3f(random(rnd) * 2 - 1, random(rnd) * 2 - 1, random(rnd) * 2 - 1));
                 float roation = random(rnd) * 2 * M_PI;
                 for (int i = 0; i < mesh->vertex.size(); i++) {

@@ -23,7 +23,7 @@ project(CSE274ProjectRenderer)
 cmake_minimum_required(VERSION 3.10)
 if (NOT WIN32)
 # visual studio doesn't like these (not need them):
-set (CMAKE_CXX_FLAGS "--std=c++11")
+set (CMAKE_CXX_FLAGS "--std=c++17")
 set (CUDA_PROPAGATE_HOST_FLAGS ON)
 endif()
 

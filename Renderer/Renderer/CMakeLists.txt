@@ -37,7 +37,7 @@ Material.cpp
   Scene.h
   Scene.cpp
   )
-
+target_compile_features(PathTracer PRIVATE cxx_std_17)
 target_link_libraries(PathTracer
   toneMap
   gdt

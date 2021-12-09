@@ -35,6 +35,7 @@ namespace osc {
   
   struct fullframe {
       std::vector<vec4f> color;
+      std::vector<vec4f> noDenoisecolor;
       std::vector<vec4f> Scolor;
       std::vector<vec4f> Dcolor;
 

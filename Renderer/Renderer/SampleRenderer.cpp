@@ -940,8 +940,8 @@ namespace osc {
       vec4f* temp = frame.color.data();
       denoisedBuffer.download(temp,
           (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
-
-
+      fbColor.download(frame.noDenoisecolor.data(),
+          (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
       ScolorBuffer.download(frame.Scolor.data(),
           (int)launchParams.frame.size.x * (int)launchParams.frame.size.y);
       DcolorBuffer.download(frame.Dcolor.data(),
