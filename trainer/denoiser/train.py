@@ -1,4 +1,10 @@
 import torch
+from torch.utils.cpp_extension import (BuildExtension, include_paths, library_paths)
+
+try:  # TODO(mgharbi): this is a hack so that Sphinx can compile the doc
+    import halide_ops as ops
+except Exception as e:
+    print("Halide extension not loaded!\n %s", e)
 from torch import random
 
 import torch.nn as nn
@@ -6,9 +12,14 @@ from torch.optim import lr_scheduler
 import numpy as np
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from model import denoiseNet, smapeLoss
-from dataset import DenoiseDataset
+from .model import denoiseNet, smapeLoss
+from .dataset import DenoiseDataset
 
+if (not torch.cuda.is_available):
+    print("CUDA failed")
+
+
+ops.kernel_weighting_cuda_float32()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device = 'cpu'
 num_epochs = 1000
@@ -21,7 +32,7 @@ for layer in model.modules():
   if isinstance(layer, nn.BatchNorm2d):
     layer.float()
     # print("layer corrected")
-dataset = DenoiseDataset("D:/274 Traning Dataset")
+dataset = DenoiseDataset("/mnt/d/274 Traning Dataset")
 # train_size = int(0.8 * len(dataset))
 # test_size = len(dataset) - train_size
 # train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
@@ -66,7 +77,7 @@ for epoch in range(num_epochs):
     AccLost = 0
     epochLost = 0
 # store 
-FILE = "D:/model.pth"
+FILE = "/mnt/d/model.pth"
 torch.save(model.state_dict(), FILE)
 # load
 # model = denoiseNet()
