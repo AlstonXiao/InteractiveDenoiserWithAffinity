@@ -1,10 +1,7 @@
 import os
-import struct
-import torch
 import random
 import cv2
 import numpy as np
-from torch.utils.data import Dataset
 
 def createDataset(path, outputPath, spp, cropPerImage):
     bigImages = os.listdir(path)
@@ -14,6 +11,9 @@ def createDataset(path, outputPath, spp, cropPerImage):
         imagePath = os.path.join(path, image)
         reference =cv2.imread(os.path.join(imagePath, "_reference.hdr"), flags=cv2.IMREAD_ANYDEPTH|cv2.IMREAD_UNCHANGED)
         reference = reference.transpose((2, 0, 1))
+
+        reference_no_denoise =cv2.imread(os.path.join(imagePath, "_referenceNODenoise.hdr"), flags=cv2.IMREAD_ANYDEPTH|cv2.IMREAD_UNCHANGED)
+        reference_no_denoise = reference_no_denoise.transpose((2, 0, 1))
 
         radiance = list()
         imageFloatSamples = list()
@@ -54,29 +54,34 @@ def createDataset(path, outputPath, spp, cropPerImage):
             rotation = random.randrange(4)
             HFlip = random.randrange(2)
             VFlip = random.randrange(2)
-            ref = np.array(reference[:,cropX:cropX+144,cropY:cropY+144]).astype(np.float16)
-            rad= np.array(radiance[:,cropX:cropX+144,cropY:cropY+144]).astype(np.float16)
+            ref = np.array(reference[:,cropX:cropX+144,cropY:cropY+144]).astype(np.float32)
+            refD = np.array(reference_no_denoise[:,cropX:cropX+144,cropY:cropY+144]).astype(np.float32)
+            rad= np.array(radiance[:,cropX:cropX+144,cropY:cropY+144]).astype(np.float32)
             fltPS = np.array(imageFloatSamples[:,:,cropX:cropX+144,cropY:cropY+144]).astype(np.float16)
             boolPS = np.array(imageboolSamples[:,:,cropX:cropX+144,cropY:cropY+144])
             for j in range(rotation):
                 ref = np.rot90(ref, axes=(1,2))
+                refD = np.rot90(refD, axes=(1,2))
                 rad = np.rot90(rad, axes=(1,2))
                 fltPS = np.rot90(fltPS, axes=(2,3))
                 boolPS = np.rot90(boolPS, axes=(2,3))
             if HFlip > 0:
                 ref = np.flip(ref, 1)
+                refD = np.flip(refD, 1)
                 rad = np.flip(rad, 1)
                 fltPS = np.flip(fltPS, 2)
                 boolPS = np.flip(boolPS, 2)
             if VFlip > 0:
                 ref = np.flip(ref, 2)
+                refD = np.flip(refD, 2)
                 rad = np.flip(rad, 2)
                 fltPS = np.flip(fltPS, 3)
                 boolPS = np.flip(boolPS, 3)
-            # cv2.imshow("we",fltPS[0][6:9].transpose(1,2,0).astype(np.float32))
+            # cv2.imshow("Before Denoise Reference",refD.transpose(1,2,0).astype(np.float32))
+            # cv2.imshow("After Denoise Reference",ref.transpose(1,2,0).astype(np.float32))
             # cv2.waitKey(0)
-            np.save(os.path.join(outputPath, str(count)+"_traningSample.npy"), np.array([ref, rad, fltPS, boolPS]))
+            np.save(os.path.join(outputPath, str(count)+"_traningSample.npy"), np.array([ref, rad, fltPS, boolPS, refD]))
             count += 1
 
 if __name__ == '__main__':
-    createDataset("C:/Users/Alsto/OneDrive - UC San Diego/CSE 274/dataset", "D:/274 Traning Dataset",8, 25)
+    createDataset("D:/274 images", "D:/274 New Training Dataset", 8, 20)

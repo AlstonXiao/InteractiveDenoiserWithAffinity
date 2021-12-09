@@ -1,38 +1,24 @@
 import torch
-from torch import random
-
 import torch.nn as nn
-import numpy as np
 import torch.nn.functional as F
-
-class smapeLoss(nn.Module):
-    def __init__(self, eps=1e-4):
-        super(smapeLoss, self).__init__()
-        self.eps = eps
-
-    def forward(self, im, ref):
-        loss = (torch.abs(im-ref) / (
-            self.eps + torch.abs(im.detach()) + torch.abs(ref.detach()))).mean()
-        return loss/3
+from torch.autograd import Variable
 
 class denoiseNet(nn.Module):
-    def __init__(self):
+    def __init__(self, final_layer_size = 11, kernel_size = 11,  embedding_width = 32, unet_channel_structure = [64, 64, 80, 96],):
         super(denoiseNet, self).__init__()
         self.FC1perSample = nn.Conv2d(17, 32, 1, 1)
         self.FC2perSample = nn.Conv2d(32, 32, 1, 1) 
         self.FC3perSample = nn.Conv2d(32, 32, 1, 1) 
-        self.embedding_width =32
-
+        self.embedding_width = embedding_width
+        self.kernel_total_size = kernel_size*kernel_size
         # Unet
-        self.unet = UNet(self.embedding_width, 11*11, [64,64,80,96])
+        self.unet = UNet(self.embedding_width, self.kernel_total_size, unet_channel_structure, final_layer_size)
 
     def forward(self, samples):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        #device = 'cpu'
         radiance = samples["radiance"]
         features = samples["features"]
-        radiance = radiance.to(device)
-        features = features.to(device)
+        radiance = Variable(radiance)
+        features = Variable(features)
 
         bs, spp, nf, h, w = features.shape
 
@@ -52,25 +38,21 @@ class denoiseNet(nn.Module):
         kernel = kernel[:, :,8:136,8:136 ]
         kernel = F.softmax(kernel, dim=1)
         channel = 3
-        
-        # for layer in range(kernel.shape[0]):
-        
-        output = torch.zeros(bs, channel, 128, 128).to(device)
-        channelOutput = []
+
+        # we are operating on floating point images
+        kernel = kernel.float()
         layerOutput = []
         # print(kernel.shape)
         for layer in range(kernel.shape[0]):
+            channelOutput = []
             for outputchannel in range(channel):
-                channelOutput.append(torch.sum((radiance[layer][(outputchannel)*121:(outputchannel+1)*121] * kernel[layer]),0))
+                channelOutput.append(torch.sum((radiance[layer][(outputchannel)*self.kernel_total_size:(outputchannel+1)*self.kernel_total_size] * kernel[layer]),0))
             layerOutput.append(torch.stack(channelOutput))
             
         return torch.stack(layerOutput), kernel
-        # return kernel[:, :,8:136,8:136 ], kernel
-
-
 
 class UNet(nn.Module):
-    def __init__(self, input_chan, output_chan, dims):
+    def __init__(self, input_chan, output_chan, dims, finalLayer):
         super(UNet, self).__init__()
         self.down = nn.ModuleList()
         self.up = nn.ModuleList()
@@ -89,7 +71,7 @@ class UNet(nn.Module):
             )
             self.up.append(doubleCov(dim*2, dim, 1))
             last = dim
-        self.outputLayer = nn.Conv2d(dims[0], output_chan, kernel_size=1)
+        self.outputLayer = nn.Conv2d(dims[0], output_chan, kernel_size=finalLayer, padding=finalLayer//2)
             
 
     def forward(self, x):
@@ -113,16 +95,12 @@ class doubleCov(nn.Module):
     def __init__(self, input_channel, output_channel, padding):
         super(doubleCov, self).__init__()
         self.doubelConvolution = nn.Sequential(
-            nn.Conv2d(input_channel, output_channel, kernel_size=3, padding=padding, padding_mode="reflect"),
+            nn.Conv2d(input_channel, output_channel, kernel_size=3, padding=padding, padding_mode="zeros"),
             nn.BatchNorm2d(output_channel),
             nn.LeakyReLU(inplace=True),
-            nn.Conv2d(output_channel, output_channel, kernel_size=3, padding=padding, padding_mode="reflect"),
+            nn.Conv2d(output_channel, output_channel, kernel_size=3, padding=padding, padding_mode="zeros"),
             nn.BatchNorm2d(output_channel),
             nn.LeakyReLU(inplace=True)
         )
     def forward(self, x):
         return self.doubelConvolution(x)
-
-# inputs = {"features" : torch.rand(4,8,17,144,144), "radiance" : torch.rand(4, 3, 144, 144) }
-# model = denoiseNet()
-# print(model.forward(inputs)[0][0])
